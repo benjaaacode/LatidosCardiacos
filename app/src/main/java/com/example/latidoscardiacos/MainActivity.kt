@@ -25,6 +25,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.BluetoothSearching
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Bluetooth
 import androidx.compose.material.icons.filled.Fingerprint
 import androidx.compose.material.icons.filled.Visibility
@@ -32,6 +33,7 @@ import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
+import java.security.MessageDigest
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -45,6 +47,7 @@ import androidx.compose.ui.unit.sp
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.fragment.app.FragmentActivity
+import androidx.activity.compose.BackHandler
 import com.example.latidoscardiacos.data.AppDatabase
 import com.example.latidoscardiacos.data.Usuario
 import com.example.latidoscardiacos.data.UsuarioDao
@@ -92,6 +95,7 @@ class MainActivity : FragmentActivity() {
                             )
                         }
                         Pantalla.REGISTRO -> {
+                            BackHandler { pantallaActual = Pantalla.LOGIN_TRADICIONAL }
                             PantallaRegistro(
                                 modifier = Modifier.padding(innerPadding),
                                 usuarioDao = usuarioDao,
@@ -100,6 +104,7 @@ class MainActivity : FragmentActivity() {
                             )
                         }
                         Pantalla.LOGIN_BIOMETRICO -> {
+                            BackHandler { pantallaActual = Pantalla.LOGIN_TRADICIONAL }
                             PantallaLoginBiometrico(
                                 modifier = Modifier.padding(innerPadding),
                                 onLoginExitoso = { pantallaActual = Pantalla.PRINCIPAL },
@@ -107,13 +112,27 @@ class MainActivity : FragmentActivity() {
                             )
                         }
                         Pantalla.PRINCIPAL -> {
-                            PantallaPrincipal(modifier = Modifier.padding(innerPadding))
+                            BackHandler { pantallaActual = Pantalla.LOGIN_TRADICIONAL }
+                            PantallaPrincipal(
+                                modifier = Modifier.padding(innerPadding),
+                                onCerrarSesion = { pantallaActual = Pantalla.LOGIN_TRADICIONAL }
+                            )
                         }
                     }
                 }
             }
         }
     }
+}
+
+// ==========================================
+// UTILIDAD: CIFRADO DE CONTRASEÑA (SHA-256)
+// ==========================================
+fun hashPassword(password: String): String {
+    val bytes = password.toByteArray()
+    val md = MessageDigest.getInstance("SHA-256")
+    val digest = md.digest(bytes)
+    return digest.fold("") { str, it -> str + "%02x".format(it) }
 }
 
 // ==========================================
@@ -209,8 +228,9 @@ fun PantallaLoginTradicional(
 
                 coroutineScope.launch {
                     try {
+                        val hashedPassword = hashPassword(contrasena)
                         val usuario = withContext(Dispatchers.IO) {
-                            usuarioDao?.login(inputCorreo, contrasena)
+                            usuarioDao?.login(inputCorreo, hashedPassword)
                         }
 
                         // Verificación con base de datos o backdoor para pruebas
@@ -288,9 +308,24 @@ fun PantallaRegistro(
             .fillMaxSize()
             .padding(32.dp)
             .verticalScroll(rememberScrollState()),
-        verticalArrangement = Arrangement.Center,
+        verticalArrangement = Arrangement.Top,
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
+        // --- BOTÓN DE VOLVER ATRÁS ---
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.Start
+        ) {
+            IconButton(onClick = onVolver) {
+                Icon(
+                    imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                    contentDescription = "Volver"
+                )
+            }
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
+
         Text(
             text = "Crear Cuenta",
             fontSize = 32.sp,
@@ -366,11 +401,12 @@ fun PantallaRegistro(
 
                 coroutineScope.launch {
                     try {
+                        val hashedPassword = hashPassword(contrasena)
                         val nuevoUsuario = Usuario(
                             nombre = inputNombre,
                             edad = inputEdad,
                             correo = inputCorreo,
-                            contrasena = contrasena
+                            contrasena = hashedPassword
                         )
 
                         withContext(Dispatchers.IO) {
@@ -395,6 +431,8 @@ fun PantallaRegistro(
         TextButton(onClick = onVolver) {
             Text("Ya tengo una cuenta. Iniciar Sesión")
         }
+        
+        Spacer(modifier = Modifier.weight(1f))
     }
 }
 
@@ -415,9 +453,24 @@ fun PantallaLoginBiometrico(
         modifier = modifier
             .fillMaxSize()
             .padding(32.dp),
-        verticalArrangement = Arrangement.Center,
+        verticalArrangement = Arrangement.Top,
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
+        // --- BOTÓN DE VOLVER ATRÁS ---
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.Start
+        ) {
+            IconButton(onClick = onVolver) {
+                Icon(
+                    imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                    contentDescription = "Volver"
+                )
+            }
+        }
+        
+        Spacer(modifier = Modifier.weight(1f))
+
         Text(
             text = "NetPulse",
             fontSize = 40.sp,
@@ -474,6 +527,8 @@ fun PantallaLoginBiometrico(
         TextButton(onClick = onVolver) {
             Text("Usar correo y contraseña")
         }
+        
+        Spacer(modifier = Modifier.weight(1f))
     }
 }
 
@@ -482,7 +537,10 @@ fun PantallaLoginBiometrico(
 // ==========================================
 @SuppressLint("MissingPermission")
 @Composable
-fun PantallaPrincipal(modifier: Modifier = Modifier) {
+fun PantallaPrincipal(
+    modifier: Modifier = Modifier,
+    onCerrarSesion: () -> Unit = {}
+) {
     val context = LocalContext.current
     val activity = context as? FragmentActivity
     
@@ -545,6 +603,20 @@ fun PantallaPrincipal(modifier: Modifier = Modifier) {
             .padding(16.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
+        // --- BOTÓN DE CERRAR SESIÓN (NUEVO) ---
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.Start
+        ) {
+            IconButton(onClick = onCerrarSesion) {
+                Icon(
+                    imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                    contentDescription = "Cerrar Sesión / Volver al Inicio"
+                )
+            }
+        }
+        // ----------------------------------------
+
         Icon(
             imageVector = if (escaneando) Icons.AutoMirrored.Filled.BluetoothSearching else Icons.Filled.Bluetooth,
             contentDescription = "Bluetooth",
