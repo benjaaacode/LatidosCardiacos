@@ -636,9 +636,12 @@ fun PantallaPrincipal(
         Button(
             onClick = {
                 val permisos = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                    arrayOf(Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT)
+                    arrayOf(
+                        Manifest.permission.BLUETOOTH_SCAN,
+                        Manifest.permission.BLUETOOTH_CONNECT
+                    )
                 } else {
-                    arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION)
+                    arrayOf()
                 }
                 
                 val permisosConcedidos = permisos.all { 
@@ -661,7 +664,7 @@ fun PantallaPrincipal(
                         escaneando = true
                         val inicioExitoso = bluetoothAdapter.startDiscovery()
                         if (!inicioExitoso) {
-                           Toast.makeText(context, "Fallo al iniciar el escáner. Verifica tu Ubicación (GPS)", Toast.LENGTH_LONG).show()
+                           Toast.makeText(context, "Fallo al iniciar el escáner Bluetooth", Toast.LENGTH_LONG).show()
                            escaneando = false
                         }
                     }
