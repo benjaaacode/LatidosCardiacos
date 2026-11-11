@@ -14,5 +14,6 @@ data class Usuario(
     val nombre: String,
     val edad: Int,
     val correo: String,
-    val contrasena: String
+    val contrasena: String, // Hash Argon2id
+    val salt: String = ""   // Salt Hexadecimal
 )
