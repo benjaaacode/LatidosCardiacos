@@ -5,6 +5,7 @@ import android.annotation.SuppressLint
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothManager
+import android.bluetooth.BluetoothSocket
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -13,6 +14,9 @@ import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import android.widget.Toast
+import java.io.IOException
+import java.util.UUID
+import kotlinx.coroutines.delay
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.biometric.BiometricPrompt
@@ -533,7 +537,7 @@ fun PantallaLoginBiometrico(
 }
 
 // ==========================================
-// PANTALLA: PRINCIPAL (BLUETOOTH)
+// PANTALLA: PRINCIPAL (BLUETOOTH + RECONEXIÓN AUTOMÁTICA)
 // ==========================================
 @SuppressLint("MissingPermission")
 @Composable
@@ -551,20 +555,80 @@ fun PantallaPrincipal(
     val dispositivosEncontrados = remember { mutableStateListOf<DispositivoBluetooth>() }
     var escaneando by remember { mutableStateOf(false) }
 
+    // Estados para la conexión y reconexión automática
+    var dispositivoSeleccionado by remember { mutableStateOf<DispositivoBluetooth?>(null) }
+    var estadoConexion by remember { mutableStateOf("Desconectado") }
+    var socketActivo by remember { mutableStateOf<BluetoothSocket?>(null) }
+
+    // Mecanismo de conexión y reconexión automática en segundo plano
+    LaunchedEffect(dispositivoSeleccionado) {
+        val disp = dispositivoSeleccionado
+        if (disp != null) {
+            val device = bluetoothAdapter?.getRemoteDevice(disp.direccionMac)
+            if (device == null) {
+                estadoConexion = "Error: Dispositivo no encontrado"
+                return@LaunchedEffect
+            }
+
+            val uuid = UUID.fromString("00001101-0000-1000-8000-00805F9B34FB") // UUID estándar SPP
+
+            while (dispositivoSeleccionado != null) {
+                try {
+                    estadoConexion = if (estadoConexion == "Reconectando...") "Reconectando..." else "Conectando..."
+                    
+                    if (bluetoothAdapter.isDiscovering) {
+                        bluetoothAdapter.cancelDiscovery()
+                    }
+
+                    val socket = device.createRfcommSocketToServiceRecord(uuid)
+                    socket.connect()
+                    
+                    socketActivo = socket
+                    estadoConexion = "Conectado"
+                    
+                    // Bucle de monitoreo de conexión. Si se pierde, lanza IOException
+                    val inputStream = socket.inputStream
+                    val buffer = ByteArray(1024)
+                    while (socket.isConnected) {
+                        val bytes = inputStream.read(buffer)
+                        if (bytes == -1) break
+                    }
+                } catch (e: IOException) {
+                    // Pérdida de conexión o fallo -> Iniciamos reconexión automática
+                    try {
+                        socketActivo?.close()
+                    } catch (_: Exception) {
+                    }
+                    socketActivo = null
+                    estadoConexion = "Reconectando..."
+                    delay(4000) // Espera 4 segundos antes de reintentar reconectar automáticamente
+                } catch (e: SecurityException) {
+                    estadoConexion = "Error: Permiso Bluetooth denegado"
+                    break
+                }
+            }
+        } else {
+            try {
+                socketActivo?.close()
+            } catch (_: Exception) {
+            }
+            socketActivo = null
+            estadoConexion = "Desconectado"
+        }
+    }
+
     // Este bloque gestiona los eventos de búsqueda de Bluetooth
     DisposableEffect(context) {
         val receiver = object : BroadcastReceiver() {
             override fun onReceive(context: Context, intent: Intent) {
                 when (intent.action) {
                     BluetoothDevice.ACTION_FOUND -> {
-                        // Un dispositivo fue encontrado
                         val device = intent.getParcelableExtra<BluetoothDevice>(BluetoothDevice.EXTRA_DEVICE)
                         device?.let {
                             val nombre = it.name ?: "Dispositivo Desconocido"
                             val mac = it.address
                             val nuevoDisp = DispositivoBluetooth(nombre, mac)
                             
-                            // Evitamos agregar duplicados a la lista
                             if (!dispositivosEncontrados.any { d -> d.direccionMac == mac }) {
                                 dispositivosEncontrados.add(nuevoDisp)
                             }
@@ -580,7 +644,6 @@ fun PantallaPrincipal(
             }
         }
         
-        // Registramos qué eventos queremos escuchar
         val filter = IntentFilter().apply {
             addAction(BluetoothDevice.ACTION_FOUND)
             addAction(BluetoothAdapter.ACTION_DISCOVERY_STARTED)
@@ -588,11 +651,15 @@ fun PantallaPrincipal(
         }
         context.registerReceiver(receiver, filter)
 
-        // Limpieza cuando el usuario sale de la pantalla
         onDispose {
             context.unregisterReceiver(receiver)
             if (escaneando && bluetoothAdapter != null) {
                 bluetoothAdapter.cancelDiscovery()
+            }
+            try {
+                socketActivo?.close()
+            } catch (e: Exception) {
+                // Ignore
             }
         }
     }
@@ -603,7 +670,7 @@ fun PantallaPrincipal(
             .padding(16.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        // --- BOTÓN DE CERRAR SESIÓN (NUEVO) ---
+        // --- BOTÓN DE CERRAR SESIÓN ---
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.Start
@@ -615,7 +682,6 @@ fun PantallaPrincipal(
                 )
             }
         }
-        // ----------------------------------------
 
         Icon(
             imageVector = if (escaneando) Icons.AutoMirrored.Filled.BluetoothSearching else Icons.Filled.Bluetooth,
@@ -630,7 +696,45 @@ fun PantallaPrincipal(
             fontWeight = FontWeight.Bold,
             textAlign = TextAlign.Center
         )
-        Spacer(modifier = Modifier.height(24.dp))
+        Spacer(modifier = Modifier.height(16.dp))
+
+        // --- PANEL DE ESTADO Y RECONEXIÓN AUTOMÁTICA ---
+        if (dispositivoSeleccionado != null) {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(
+                    containerColor = when (estadoConexion) {
+                        "Conectado" -> MaterialTheme.colorScheme.primaryContainer
+                        "Reconectando..." -> MaterialTheme.colorScheme.errorContainer
+                        else -> MaterialTheme.colorScheme.secondaryContainer
+                    }
+                )
+            ) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Text(
+                        text = "Dispositivo: ${dispositivoSeleccionado?.nombre}",
+                        fontWeight = FontWeight.Bold
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(text = "Estado: $estadoConexion")
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Button(
+                        onClick = {
+                            dispositivoSeleccionado = null
+                        },
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.error
+                        )
+                    ) {
+                        Text("Desconectar / Detener reconexión")
+                    }
+                }
+            }
+            Spacer(modifier = Modifier.height(16.dp))
+        }
         
         // Botón para escanear
         Button(
@@ -649,18 +753,15 @@ fun PantallaPrincipal(
                 }
 
                 if (permisosConcedidos) {
-                    // LÓGICA REAL DE BÚSQUEDA BLUETOOTH
                     if (bluetoothAdapter == null) {
                         Toast.makeText(context, "Este dispositivo no soporta Bluetooth", Toast.LENGTH_LONG).show()
                     } else if (!bluetoothAdapter.isEnabled) {
                         Toast.makeText(context, "Por favor, enciende el Bluetooth del celular primero", Toast.LENGTH_LONG).show()
                     } else {
                         dispositivosEncontrados.clear()
-                        // IMPORTANTE: Cancelar descubrimiento antes de iniciar uno nuevo
                         if (bluetoothAdapter.isDiscovering) {
                             bluetoothAdapter.cancelDiscovery()
                         }
-                        // Forzamos un pequeño retraso visual para que Android alcance a cancelar y reiniciar
                         escaneando = true
                         val inicioExitoso = bluetoothAdapter.startDiscovery()
                         if (!inicioExitoso) {
@@ -671,12 +772,12 @@ fun PantallaPrincipal(
                 } else {
                     if (activity != null) {
                         ActivityCompat.requestPermissions(activity, permisos, 100)
-                        Toast.makeText(context, "Acepta los permisos de Bluetooth y Ubicación Cercana", Toast.LENGTH_LONG).show()
+                        Toast.makeText(context, "Acepta los permisos de Bluetooth", Toast.LENGTH_LONG).show()
                     }
                 }
             },
             modifier = Modifier.fillMaxWidth().height(50.dp),
-            enabled = !escaneando // Desactiva el botón mientras ya está buscando
+            enabled = !escaneando
         ) {
             Text(if (escaneando) "Buscando (Tarda unos 12s)..." else "Buscar Dispositivos", fontSize = 16.sp)
         }
@@ -701,8 +802,9 @@ fun PantallaPrincipal(
                             .clickable {
                                 Toast.makeText(context, "Conectando a ${dispositivo.nombre}...", Toast.LENGTH_SHORT).show()
                                 if (bluetoothAdapter?.isDiscovering == true) {
-                                    bluetoothAdapter.cancelDiscovery() // Detiene la búsqueda al conectar
+                                    bluetoothAdapter.cancelDiscovery()
                                 }
+                                dispositivoSeleccionado = dispositivo
                             },
                         colors = CardDefaults.cardColors(
                             containerColor = MaterialTheme.colorScheme.surfaceVariant
