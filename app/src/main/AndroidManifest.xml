@@ -8,7 +8,10 @@
     <!-- Permisos obligatorios para celulares con Android 12 o superior: -->
 
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
-    <uses-permission android:name="android.permission.BLUETOOTH_SCAN" />
+    <uses-permission
+        android:name="android.permission.BLUETOOTH_SCAN"
+        android:usesPermissionFlags="neverForLocation"
+        tools:targetApi="s" />
     <uses-feature android:name="android.hardware.bluetooth" android:required="false"/>
 
 
