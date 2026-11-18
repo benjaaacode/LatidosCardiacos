@@ -399,7 +399,34 @@ fun PantallaRegistro(
                 val inputCorreo = correo.trim()
 
                 if (inputNombre.isEmpty() || inputEdad == null || inputCorreo.isEmpty() || contrasena.isEmpty()) {
-                    Toast.makeText(context, "Por favor completa todos los campos correctamente", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(context, "Por favor completa todos los campos", Toast.LENGTH_SHORT).show()
+                    return@Button
+                }
+
+                // 1. Validar restricción de Edad (1 a 110 años)
+                if (inputEdad !in 1..110) {
+                    Toast.makeText(context, "La edad debe estar entre 1 y 110 años", Toast.LENGTH_LONG).show()
+                    return@Button
+                }
+
+                // 2. Validar longitud de la contraseña (Mínimo 8 caracteres)
+                if (contrasena.length < 8) {
+                    Toast.makeText(context, "La contraseña debe tener al menos 8 caracteres", Toast.LENGTH_LONG).show()
+                    return@Button
+                }
+
+                // 3. Validar símbolos permitidos en la contraseña: : , / & % $ # " ! ¡ = ( ) ? ¿
+                val simbolosPermitidos = setOf(':', ',', '/', '&', '%', '$', '#', '"', '!', '¡', '=', '(', ')', '?', '¿')
+                val simboloInvalido = contrasena.firstOrNull { char ->
+                    !char.isLetterOrDigit() && char !in simbolosPermitidos
+                }
+
+                if (simboloInvalido != null) {
+                    Toast.makeText(
+                        context,
+                        "Símbolo '$simboloInvalido' no permitido. Solo se aceptan: : , / & % $ # \" ! ¡ = ( ) ? ¿",
+                        Toast.LENGTH_LONG
+                    ).show()
                     return@Button
                 }
 
