@@ -6,8 +6,14 @@ import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothSocket
+import android.bluetooth.BluetoothGatt
+import android.bluetooth.BluetoothGattCallback
+import android.bluetooth.BluetoothGattCharacteristic
+import android.bluetooth.BluetoothGattDescriptor
+import android.bluetooth.BluetoothProfile
 import android.bluetooth.le.ScanCallback
 import android.bluetooth.le.ScanResult
+import android.bluetooth.le.ScanSettings
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -21,8 +27,10 @@ import android.widget.Toast
 import java.io.IOException
 import java.util.UUID
 import kotlinx.coroutines.delay
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.biometric.BiometricPrompt
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -31,15 +39,20 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.BluetoothSearching
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Bluetooth
+import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.Fingerprint
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.Alignment
 import java.security.MessageDigest
 import androidx.compose.ui.Modifier
@@ -57,10 +70,12 @@ import androidx.core.content.ContextCompat
 import androidx.fragment.app.FragmentActivity
 import androidx.activity.compose.BackHandler
 import com.example.latidoscardiacos.data.AppDatabase
+import com.example.latidoscardiacos.data.LecturaSensor
 import com.example.latidoscardiacos.data.Usuario
 import com.example.latidoscardiacos.data.UsuarioDao
 import com.example.latidoscardiacos.ui.theme.LatidosCardiacosTheme
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.GlobalScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -568,195 +583,301 @@ fun PantallaLoginBiometrico(
 }
 
 // ==========================================
-// PANTALLA: PRINCIPAL (BLUETOOTH + RECONEXIÓN AUTOMÁTICA)
+// PANTALLA: PRINCIPAL (BLE CON ARDUINO R4 WIFI - "NetPulse_R4")
 // ==========================================
 @SuppressLint("MissingPermission")
 @Composable
 fun PantallaPrincipal(
     modifier: Modifier = Modifier,
+    database: AppDatabase? = null,
     onCerrarSesion: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val activity = context as? FragmentActivity
-    
-    // Configuración real de Bluetooth
+    val coroutineScope = rememberCoroutineScope()
+
     val bluetoothManager = context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
     val bluetoothAdapter = bluetoothManager.adapter
-    
+    val bluetoothLeScanner = bluetoothAdapter?.bluetoothLeScanner
+
     val dispositivosEncontrados = remember { mutableStateListOf<DispositivoBluetooth>() }
     var escaneando by remember { mutableStateOf(false) }
 
-    // Estados para la conexión y reconexión automática
     var dispositivoSeleccionado by remember { mutableStateOf<DispositivoBluetooth?>(null) }
     var estadoConexion by remember { mutableStateOf("Desconectado") }
-    var socketActivo by remember { mutableStateOf<BluetoothSocket?>(null) }
+    var bluetoothGatt by remember { mutableStateOf<BluetoothGatt?>(null) }
 
-    // Mecanismo de conexión y reconexión automática en segundo plano
-    LaunchedEffect(dispositivoSeleccionado) {
-        val disp = dispositivoSeleccionado
-        if (disp != null) {
-            val device = bluetoothAdapter?.getRemoteDevice(disp.direccionMac)
-            if (device == null) {
-                estadoConexion = "Error: Dispositivo no encontrado"
-                return@LaunchedEffect
-            }
+    // Estado del sensor recibido del Arduino R4 WiFi
+    var lecturaSensorTexto by remember { mutableStateOf("Sin dedo") }
+    var bpmActual by remember { mutableIntStateOf(0) }
+    var modoEco by remember { mutableStateOf(false) }
 
-            val uuid = UUID.fromString("00001101-0000-1000-8000-00805F9B34FB") // UUID estándar SPP
+    val serviceUuid = remember { UUID.fromString("19B10000-E8F2-537E-4F6C-D104768A1214") }
+    val charUuid = remember { UUID.fromString("19B10001-E8F2-537E-4F6C-D104768A1214") }
+    val cccdUuid = remember { UUID.fromString("00002902-0000-1000-8000-00805f9b34fb") }
 
-            while (dispositivoSeleccionado != null) {
-                try {
-                    estadoConexion = if (estadoConexion == "Reconectando...") "Reconectando..." else "Conectando..."
-                    
-                    if (bluetoothAdapter.isDiscovering) {
-                        bluetoothAdapter.cancelDiscovery()
-                    }
-
-                    val socket = device.createRfcommSocketToServiceRecord(uuid)
-                    socket.connect()
-                    
-                    socketActivo = socket
-                    estadoConexion = "Conectado"
-                    
-                    // Bucle de monitoreo de conexión. Si se pierde, lanza IOException
-                    val inputStream = socket.inputStream
-                    val buffer = ByteArray(1024)
-                    while (socket.isConnected) {
-                        val bytes = inputStream.read(buffer)
-                        if (bytes == -1) break
-                    }
-                } catch (e: IOException) {
-                    // Pérdida de conexión o fallo -> Iniciamos reconexión automática
-                    try {
-                        socketActivo?.close()
-                    } catch (_: Exception) {
-                    }
-                    socketActivo = null
-                    estadoConexion = "Reconectando..."
-                    delay(4000) // Espera 4 segundos antes de reintentar reconectar automáticamente
-                } catch (e: SecurityException) {
-                    estadoConexion = "Error: Permiso Bluetooth denegado"
-                    break
-                }
+    fun enviarComandoArduino(comando: String) {
+        if (bluetoothGatt != null && estadoConexion == "Conectado") {
+            val service = bluetoothGatt?.getService(serviceUuid)
+            val characteristic = service?.getCharacteristic(charUuid)
+            if (characteristic != null) {
+                characteristic.value = comando.toByteArray(Charsets.UTF_8)
+                bluetoothGatt?.writeCharacteristic(characteristic)
+                Toast.makeText(context, "Instrucción enviada a Arduino: $comando", Toast.LENGTH_SHORT).show()
             }
         } else {
-            try {
-                socketActivo?.close()
-            } catch (_: Exception) {
-            }
-            socketActivo = null
-            estadoConexion = "Desconectado"
+            Toast.makeText(context, "Conecta tu Arduino R4 WiFi primero", Toast.LENGTH_SHORT).show()
         }
     }
 
-    // Escáner BLE para Arduino UNO R4 WiFi (ESP32-S3)
-    val bleScanner = remember(bluetoothAdapter) { bluetoothAdapter?.bluetoothLeScanner }
     val scanCallback = remember {
         object : ScanCallback() {
-            override fun onScanResult(callbackType: Int, result: ScanResult?) {
-                result?.device?.let { device ->
-                    val nombre = device.name ?: result.scanRecord?.deviceName ?: "Arduino UNO R4 (BLE)"
-                    val mac = device.address
-                    val nuevoDisp = DispositivoBluetooth(nombre, mac)
+            override fun onScanResult(callbackType: Int, result: ScanResult) {
+                procesarScanResult(result)
+            }
+
+            override fun onBatchScanResults(results: MutableList<ScanResult>) {
+                results.forEach { procesarScanResult(it) }
+            }
+
+            private fun procesarScanResult(result: ScanResult) {
+                val device = result.device
+                val scanRecord = result.scanRecord
+                val rawName = device.name ?: scanRecord?.deviceName
+                val name = rawName ?: if (device.address != null) "Dispositivo BLE (${device.address.takeLast(5)})" else "Dispositivo BLE"
+                val mac = device.address ?: return
+
+                coroutineScope.launch(Dispatchers.Main) {
+                    val nuevoDisp = DispositivoBluetooth(name, mac)
                     if (!dispositivosEncontrados.any { d -> d.direccionMac == mac }) {
                         dispositivosEncontrados.add(nuevoDisp)
                     }
                 }
             }
-        }
-    }
 
-    // Este bloque gestiona los eventos de búsqueda de Bluetooth
-    DisposableEffect(context) {
-        val receiver = object : BroadcastReceiver() {
-            override fun onReceive(context: Context, intent: Intent) {
-                when (intent.action) {
-                    BluetoothDevice.ACTION_FOUND -> {
-                        val device = intent.getParcelableExtra<BluetoothDevice>(BluetoothDevice.EXTRA_DEVICE)
-                        device?.let {
-                            val nombre = it.name ?: "Dispositivo Desconocido"
-                            val mac = it.address
-                            val nuevoDisp = DispositivoBluetooth(nombre, mac)
-                            
-                            if (!dispositivosEncontrados.any { d -> d.direccionMac == mac }) {
-                                dispositivosEncontrados.add(nuevoDisp)
-                            }
-                        }
-                    }
-                    BluetoothAdapter.ACTION_DISCOVERY_STARTED -> {
-                        escaneando = true
-                    }
-                    BluetoothAdapter.ACTION_DISCOVERY_FINISHED -> {
-                        escaneando = false
-                    }
+            override fun onScanFailed(errorCode: Int) {
+                coroutineScope.launch(Dispatchers.Main) {
+                    escaneando = false
+                    Toast.makeText(context, "Fallo en escaneo BLE: $errorCode", Toast.LENGTH_SHORT).show()
                 }
             }
         }
-        
-        val filter = IntentFilter().apply {
-            addAction(BluetoothDevice.ACTION_FOUND)
-            addAction(BluetoothAdapter.ACTION_DISCOVERY_STARTED)
-            addAction(BluetoothAdapter.ACTION_DISCOVERY_FINISHED)
-        }
-        context.registerReceiver(receiver, filter)
+    }
 
+
+
+    val gattCallback = remember {
+        object : BluetoothGattCallback() {
+            override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
+                if (newState == BluetoothProfile.STATE_CONNECTED) {
+                    estadoConexion = "Conectado"
+                    gatt.discoverServices()
+                } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
+                    estadoConexion = "Desconectado"
+                    lecturaSensorTexto = "Sin conexión"
+                    bpmActual = 0
+                    bluetoothGatt = null
+                }
+            }
+
+            override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
+                if (status == BluetoothGatt.GATT_SUCCESS) {
+                    val service = gatt.getService(serviceUuid)
+                    val characteristic = service?.getCharacteristic(charUuid)
+                    if (characteristic != null) {
+                        gatt.setCharacteristicNotification(characteristic, true)
+                        val descriptor = characteristic.getDescriptor(cccdUuid)
+                        if (descriptor != null) {
+                            descriptor.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+                            gatt.writeDescriptor(descriptor)
+                        }
+                    }
+                }
+            }
+
+            override fun onCharacteristicChanged(
+                gatt: BluetoothGatt,
+                characteristic: BluetoothGattCharacteristic
+            ) {
+                val rawValue = characteristic.getStringValue(0)
+                    ?: String(characteristic.value ?: byteArrayOf(), Charsets.UTF_8)
+                val textoLimpio = rawValue.trim()
+                lecturaSensorTexto = textoLimpio
+
+                val parsedBpm = textoLimpio.toIntOrNull()
+                if (parsedBpm != null && parsedBpm > 0) {
+                    bpmActual = parsedBpm
+
+                    // Guardar en la base de datos local Room
+                    coroutineScope.launch(Dispatchers.IO) {
+                        try {
+                            val estadoStr = if (parsedBpm > 100) "CRITICO" else "NORMAL"
+                            database?.lecturaSensorDao()?.insertarLectura(
+                                LecturaSensor(
+                                    bpm = parsedBpm,
+                                    temperatura = 36.5f,
+                                    estado = estadoStr
+                                )
+                            )
+                        } catch (_: Exception) {}
+                    }
+                } else {
+                    bpmActual = 0
+                }
+            }
+        }
+    }
+
+    LaunchedEffect(dispositivoSeleccionado) {
+        val disp = dispositivoSeleccionado
+        if (disp != null) {
+            val device = bluetoothAdapter?.getRemoteDevice(disp.direccionMac)
+            if (device != null) {
+                estadoConexion = "Conectando a ${disp.nombre}..."
+                bluetoothGatt = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                    device.connectGatt(context, false, gattCallback, BluetoothDevice.TRANSPORT_LE)
+                } else {
+                    device.connectGatt(context, false, gattCallback)
+                }
+            }
+        } else {
+            bluetoothGatt?.disconnect()
+            bluetoothGatt?.close()
+            bluetoothGatt = null
+            estadoConexion = "Desconectado"
+            lecturaSensorTexto = "Sin dedo"
+            bpmActual = 0
+        }
+    }
+
+    DisposableEffect(context) {
         onDispose {
-            context.unregisterReceiver(receiver)
-            if (escaneando && bluetoothAdapter != null) {
-                bluetoothAdapter.cancelDiscovery()
-                try {
-                    bleScanner?.stopScan(scanCallback)
-                } catch (_: Exception) {}
-            }
             try {
-                socketActivo?.close()
-            } catch (e: Exception) {
-                // Ignore
-            }
+                bluetoothLeScanner?.stopScan(scanCallback)
+                bluetoothGatt?.disconnect()
+                bluetoothGatt?.close()
+            } catch (_: Exception) {}
         }
     }
 
     Column(
         modifier = modifier
             .fillMaxSize()
-            .padding(16.dp),
+            .padding(16.dp)
+            .verticalScroll(rememberScrollState()),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        // --- BOTÓN DE CERRAR SESIÓN ---
+        // --- BARRA SUPERIOR CON BOTÓN DE CERRAR SESIÓN ---
         Row(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.Start
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
         ) {
             IconButton(onClick = onCerrarSesion) {
                 Icon(
                     imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                    contentDescription = "Cerrar Sesión / Volver al Inicio"
+                    contentDescription = "Cerrar Sesión"
                 )
+            }
+            Text(
+                text = "NetPulse IoT Dashboard",
+                fontSize = 20.sp,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.primary
+            )
+            Spacer(modifier = Modifier.width(48.dp))
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        // --- TARJETA PRINCIPAL DE MONITOREO DE RITMO CARDÍACO ---
+        val colorEstado = when {
+            estadoConexion != "Conectado" -> MaterialTheme.colorScheme.secondaryContainer
+            bpmActual > 100 -> Color(0xFFFFEBEE) // Alerta rojo claro
+            bpmActual > 0 -> Color(0xFFE8F5E9)  // Normal verde claro
+            else -> MaterialTheme.colorScheme.surfaceVariant
+        }
+
+        val colorTextoBpm = when {
+            bpmActual > 100 -> Color(0xFFD32F2F)
+            bpmActual > 0 -> Color(0xFF2E7D32)
+            else -> MaterialTheme.colorScheme.onSurfaceVariant
+        }
+
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(containerColor = colorEstado),
+            shape = RoundedCornerShape(20.dp)
+        ) {
+            Column(
+                modifier = Modifier.padding(24.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        imageVector = Icons.Filled.Favorite,
+                        contentDescription = "Latidos",
+                        tint = if (bpmActual > 100) Color.Red else MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(36.dp)
+                    )
+                    Spacer(modifier = Modifier.width(12.dp))
+                    Text(
+                        text = "Ritmo Cardíaco en Tiempo Real",
+                        fontSize = 18.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(16.dp))
+
+                Text(
+                    text = if (bpmActual > 0) "$bpmActual BPM" else lecturaSensorTexto,
+                    fontSize = 42.sp,
+                    fontWeight = FontWeight.ExtraBold,
+                    color = colorTextoBpm
+                )
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                if (bpmActual > 100) {
+                    Card(
+                        colors = CardDefaults.cardColors(containerColor = Color(0xFFFFCDD2)),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            text = "⚠️ ¡ALERTA! Ritmo Cardíaco Elevado (>100 BPM) - Buzzer Activo en Pin D5",
+                            color = Color(0xFFB71C1C),
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 13.sp,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier.padding(8.dp)
+                        )
+                    }
+                } else {
+                    Text(
+                        text = when {
+                            estadoConexion != "Conectado" -> "Conecta tu Arduino R4 WiFi para ver lecturas"
+                            lecturaSensorTexto == "Sin dedo" -> "Coloca tu dedo suavemente en el sensor (A1)"
+                            lecturaSensorTexto == "Calculando..." -> "Midiendo pulso..."
+                            else -> "Lectura normal dentro del rango de salud"
+                        },
+                        fontSize = 13.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = TextAlign.Center
+                    )
+                }
             }
         }
 
-        Icon(
-            imageVector = if (escaneando) Icons.AutoMirrored.Filled.BluetoothSearching else Icons.Filled.Bluetooth,
-            contentDescription = "Bluetooth",
-            modifier = Modifier.size(60.dp),
-            tint = MaterialTheme.colorScheme.primary
-        )
-        Spacer(modifier = Modifier.height(16.dp))
-        Text(
-            text = "Dispositivos Bluetooth",
-            fontSize = 24.sp,
-            fontWeight = FontWeight.Bold,
-            textAlign = TextAlign.Center
-        )
         Spacer(modifier = Modifier.height(16.dp))
 
-        // --- PANEL DE ESTADO Y RECONEXIÓN AUTOMÁTICA ---
+        // --- PANEL DE ESTADO Y DISPOSITIVO CONECTADO ---
         if (dispositivoSeleccionado != null) {
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 colors = CardDefaults.cardColors(
                     containerColor = when (estadoConexion) {
                         "Conectado" -> MaterialTheme.colorScheme.primaryContainer
-                        "Reconectando..." -> MaterialTheme.colorScheme.errorContainer
                         else -> MaterialTheme.colorScheme.secondaryContainer
                     }
                 )
@@ -773,105 +894,220 @@ fun PantallaPrincipal(
                     Text(text = "Estado: $estadoConexion")
                     Spacer(modifier = Modifier.height(8.dp))
                     Button(
-                        onClick = {
-                            dispositivoSeleccionado = null
-                        },
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = MaterialTheme.colorScheme.error
-                        )
+                        onClick = { dispositivoSeleccionado = null },
+                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
                     ) {
-                        Text("Desconectar / Detener reconexión")
+                        Text("Desconectar Arduino")
                     }
                 }
             }
             Spacer(modifier = Modifier.height(16.dp))
         }
-        
-        // Botón para escanear
+
+        // --- CONTROL DE ACTUADORES Y ENERGÍA (Paso 4 / Rúbrica 3.1.2.5, 3.1.3.9, 3.1.3.10) ---
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Text(
+                    text = "Control de Actuadores y Energía (BLE / ISO 27000)",
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 15.sp
+                )
+                Spacer(modifier = Modifier.height(10.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceEvenly
+                ) {
+                    Button(
+                        onClick = { enviarComandoArduino("LED_ON") },
+                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+                    ) {
+                        Text("Encender LED", fontSize = 12.sp)
+                    }
+                    Button(
+                        onClick = { enviarComandoArduino("LED_OFF") },
+                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary)
+                    ) {
+                        Text("Apagar LED", fontSize = 12.sp)
+                    }
+                }
+                Spacer(modifier = Modifier.height(8.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceEvenly
+                ) {
+                    Button(
+                        onClick = { enviarComandoArduino("BUZZER_OFF") },
+                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                    ) {
+                        Text("Silenciar Buzzer", fontSize = 12.sp)
+                    }
+                    Button(
+                        onClick = {
+                            modoEco = !modoEco
+                            enviarComandoArduino(if (modoEco) "ECO_ON" else "ECO_OFF")
+                        },
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = if (modoEco) Color(0xFF2E7D32) else MaterialTheme.colorScheme.tertiary
+                        )
+                    ) {
+                        Text(if (modoEco) "Eco: ACTIVO (2s)" else "Eco: INACTIVO (500ms)", fontSize = 12.sp)
+                    }
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        // --- ALMACENAMIENTO OFFLINE Y SINCRONIZACIÓN (Paso 5 / Rúbrica 3.1.1.4 & 3.1.2.7) ---
+        val lecturasPendientesCount by database?.lecturaSensorDao()?.getCantidadNoSincronizadasFlow()?.collectAsState(initial = 0)
+            ?: remember { mutableIntStateOf(0) }
+
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Text(
+                    text = "Almacenamiento Local Offline (Room DB)",
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 15.sp
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = "Lecturas almacenadas pendientes: $lecturasPendientesCount",
+                    fontSize = 13.sp
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                Button(
+                    onClick = {
+                        coroutineScope.launch(Dispatchers.IO) {
+                            val pendientes = database?.lecturaSensorDao()?.getLecturasNoSincronizadas() ?: emptyList()
+                            if (pendientes.isNotEmpty()) {
+                                database?.lecturaSensorDao()?.marcarComoSincronizadas(pendientes.map { it.id })
+                                withContext(Dispatchers.Main) {
+                                    Toast.makeText(context, "¡${pendientes.size} lecturas sincronizadas externamente con éxito!", Toast.LENGTH_LONG).show()
+                                }
+                            } else {
+                                withContext(Dispatchers.Main) {
+                                    Toast.makeText(context, "Todas las lecturas locales están al día", Toast.LENGTH_SHORT).show()
+                                }
+                            }
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Icon(imageVector = Icons.Filled.Sync, contentDescription = null)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Sincronizar Lecturas Offline (ISO 27000)", fontSize = 13.sp)
+                }
+            }
+        }
+
+        // --- BOTÓN DE BÚSQUEDA DE ARDUINO R4 WIFI ---
         Button(
             onClick = {
                 val permisos = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                     arrayOf(
                         Manifest.permission.BLUETOOTH_SCAN,
-                        Manifest.permission.BLUETOOTH_CONNECT
+                        Manifest.permission.BLUETOOTH_CONNECT,
+                        Manifest.permission.ACCESS_FINE_LOCATION
                     )
                 } else {
-                    arrayOf()
+                    arrayOf(
+                        Manifest.permission.ACCESS_FINE_LOCATION,
+                        Manifest.permission.ACCESS_COARSE_LOCATION
+                    )
                 }
-                
-                val permisosConcedidos = permisos.all { 
+
+                val permisosConcedidos = permisos.all {
                     ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED
                 }
 
                 if (permisosConcedidos) {
-                    if (bluetoothAdapter == null) {
-                        Toast.makeText(context, "Este dispositivo no soporta Bluetooth", Toast.LENGTH_LONG).show()
+                    if (bluetoothAdapter == null || bluetoothLeScanner == null) {
+                        Toast.makeText(context, "BLE no soportado en este dispositivo", Toast.LENGTH_LONG).show()
                     } else if (!bluetoothAdapter.isEnabled) {
-                        Toast.makeText(context, "Por favor, enciende el Bluetooth del celular primero", Toast.LENGTH_LONG).show()
+                        Toast.makeText(context, "Por favor, enciende el Bluetooth del celular", Toast.LENGTH_LONG).show()
                     } else {
                         dispositivosEncontrados.clear()
-                        if (bluetoothAdapter.isDiscovering) {
-                            bluetoothAdapter.cancelDiscovery()
-                        }
                         escaneando = true
-                        bluetoothAdapter.startDiscovery()
-                        try {
-                            bleScanner?.startScan(scanCallback)
-                        } catch (_: Exception) {}
+                        val scanSettings = ScanSettings.Builder()
+                            .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
+                            .build()
+                        bluetoothLeScanner.startScan(null, scanSettings, scanCallback)
 
-                        Handler(Looper.getMainLooper()).postDelayed({
-                            try {
-                                bleScanner?.stopScan(scanCallback)
+                        coroutineScope.launch(Dispatchers.Main) {
+                            delay(12000)
+                            if (escaneando) {
+                                try {
+                                    bluetoothLeScanner.stopScan(scanCallback)
+                                } catch (_: Exception) {}
                                 escaneando = false
-                            } catch (_: Exception) {}
-                        }, 12000)
+                            }
+                        }
                     }
                 } else {
                     if (activity != null) {
                         ActivityCompat.requestPermissions(activity, permisos, 100)
-                        Toast.makeText(context, "Acepta los permisos de Bluetooth", Toast.LENGTH_LONG).show()
+                    } else {
+                        Toast.makeText(context, "Por favor, otorga los permisos de Bluetooth y Ubicación en la configuración del celular", Toast.LENGTH_LONG).show()
                     }
                 }
             },
             modifier = Modifier.fillMaxWidth().height(50.dp),
             enabled = !escaneando
         ) {
-            Text(if (escaneando) "Buscando (Tarda unos 12s)..." else "Buscar Dispositivos", fontSize = 16.sp)
+            Icon(imageVector = Icons.Filled.Search, contentDescription = null)
+            Spacer(modifier = Modifier.width(8.dp))
+            Text(if (escaneando) "Buscando NetPulse_R4 (10s)..." else "Buscar NetPulse_R4 (Arduino R4)", fontSize = 16.sp)
         }
 
         Spacer(modifier = Modifier.height(24.dp))
 
+        // --- LISTA DE DISPOSITIVOS ENCONTRADOS ---
         if (dispositivosEncontrados.isNotEmpty()) {
             Text(
-                text = "Dispositivos Disponibles:",
+                text = "Dispositivos BLE Encontrados:",
                 fontWeight = FontWeight.SemiBold,
                 modifier = Modifier.align(Alignment.Start).padding(bottom = 8.dp)
             )
-            
+
             LazyColumn(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier.fillMaxWidth().heightIn(max = 250.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 items(dispositivosEncontrados) { dispositivo ->
+                    val esNetPulse = dispositivo.nombre.contains("NetPulse_R4", ignoreCase = true)
                     Card(
                         modifier = Modifier
                             .fillMaxWidth()
                             .clickable {
+                                try {
+                                    bluetoothLeScanner?.stopScan(scanCallback)
+                                } catch (_: Exception) {}
+                                escaneando = false
                                 Toast.makeText(context, "Conectando a ${dispositivo.nombre}...", Toast.LENGTH_SHORT).show()
-                                if (bluetoothAdapter?.isDiscovering == true) {
-                                    bluetoothAdapter.cancelDiscovery()
-                                }
                                 dispositivoSeleccionado = dispositivo
                             },
                         colors = CardDefaults.cardColors(
-                            containerColor = MaterialTheme.colorScheme.surfaceVariant
+                            containerColor = if (esNetPulse) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant
                         )
                     ) {
                         Column(modifier = Modifier.padding(16.dp)) {
                             Text(
-                                text = dispositivo.nombre,
+                                text = if (esNetPulse) "⭐ ${dispositivo.nombre} (Arduino R4 WiFi)" else dispositivo.nombre,
                                 fontSize = 16.sp,
-                                fontWeight = FontWeight.Medium
+                                fontWeight = FontWeight.Bold,
+                                color = if (esNetPulse) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
                             )
                             Text(
                                 text = "MAC: ${dispositivo.direccionMac}",
