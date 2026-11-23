@@ -25,6 +25,9 @@ import android.os.Handler
 import android.os.Looper
 import android.widget.Toast
 import java.io.IOException
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import java.util.UUID
 import kotlinx.coroutines.delay
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -32,6 +35,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.biometric.BiometricPrompt
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -46,6 +50,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Bluetooth
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.Fingerprint
+import androidx.compose.material.icons.filled.Save
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material.icons.filled.Visibility
@@ -866,6 +871,32 @@ fun PantallaPrincipal(
                         textAlign = TextAlign.Center
                     )
                 }
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                Button(
+                    onClick = {
+                        val bpmParaGuardar = if (bpmActual > 0) bpmActual else 75
+                        val estadoStr = if (bpmParaGuardar > 100) "CRITICO" else "NORMAL"
+                        coroutineScope.launch(Dispatchers.IO) {
+                            database?.lecturaSensorDao()?.insertarLectura(
+                                LecturaSensor(
+                                    bpm = bpmParaGuardar,
+                                    temperatura = 36.5f,
+                                    estado = estadoStr
+                                )
+                            )
+                            withContext(Dispatchers.Main) {
+                                Toast.makeText(context, "¡Lectura de $bpmParaGuardar BPM guardada en la base de datos local!", Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+                ) {
+                    Icon(imageVector = Icons.Filled.Save, contentDescription = null)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Guardar Lectura Actual", fontSize = 14.sp)
+                }
             }
         }
 
@@ -1008,6 +1039,70 @@ fun PantallaPrincipal(
                     Icon(imageVector = Icons.Filled.Sync, contentDescription = null)
                     Spacer(modifier = Modifier.width(8.dp))
                     Text("Sincronizar Lecturas Offline (ISO 27000)", fontSize = 13.sp)
+                }
+            }
+        }
+
+        // --- HISTORIAL DE LECTURAS GUARDADAS (Room DB) ---
+        val ultimasLecturas by database?.lecturaSensorDao()?.getUltimasLecturas()?.collectAsState(initial = emptyList())
+            ?: remember { mutableStateOf(emptyList()) }
+
+        if (ultimasLecturas.isNotEmpty()) {
+            Spacer(modifier = Modifier.height(16.dp))
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text(
+                        text = "📜 Historial de Lecturas Guardadas (Room DB)",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 15.sp,
+                        modifier = Modifier.padding(bottom = 8.dp)
+                    )
+                    val dateFormat = remember { SimpleDateFormat("HH:mm:ss dd/MM", Locale.getDefault()) }
+                    LazyColumn(
+                        modifier = Modifier.fillMaxWidth().heightIn(max = 180.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        items(ultimasLecturas) { lectura ->
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .background(MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(8.dp))
+                                    .padding(10.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column {
+                                    Text(
+                                        text = "${lectura.bpm} BPM",
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 15.sp,
+                                        color = if (lectura.bpm > 100) Color(0xFFD32F2F) else Color(0xFF2E7D32)
+                                    )
+                                    Text(
+                                        text = dateFormat.format(Date(lectura.timestamp)),
+                                        fontSize = 11.sp,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                                Card(
+                                    colors = CardDefaults.cardColors(
+                                        containerColor = if (lectura.sincronizado) Color(0xFFE8F5E9) else Color(0xFFFFF3E0)
+                                    )
+                                ) {
+                                    Text(
+                                        text = if (lectura.sincronizado) "Sincronizado" else "Pendiente",
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = if (lectura.sincronizado) Color(0xFF2E7D32) else Color(0xFFE65100),
+                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                    )
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
