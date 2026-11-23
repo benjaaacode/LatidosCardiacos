@@ -45,6 +45,7 @@ import androidx.compose.material.icons.filled.Bluetooth
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.Fingerprint
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.*
@@ -607,10 +608,25 @@ fun PantallaPrincipal(
     // Estado del sensor recibido del Arduino R4 WiFi
     var lecturaSensorTexto by remember { mutableStateOf("Sin dedo") }
     var bpmActual by remember { mutableIntStateOf(0) }
+    var modoEco by remember { mutableStateOf(false) }
 
     val serviceUuid = remember { UUID.fromString("19B10000-E8F2-537E-4F6C-D104768A1214") }
     val charUuid = remember { UUID.fromString("19B10001-E8F2-537E-4F6C-D104768A1214") }
     val cccdUuid = remember { UUID.fromString("00002902-0000-1000-8000-00805f9b34fb") }
+
+    fun enviarComandoArduino(comando: String) {
+        if (bluetoothGatt != null && estadoConexion == "Conectado") {
+            val service = bluetoothGatt?.getService(serviceUuid)
+            val characteristic = service?.getCharacteristic(charUuid)
+            if (characteristic != null) {
+                characteristic.value = comando.toByteArray(Charsets.UTF_8)
+                bluetoothGatt?.writeCharacteristic(characteristic)
+                Toast.makeText(context, "Instrucción enviada a Arduino: $comando", Toast.LENGTH_SHORT).show()
+            }
+        } else {
+            Toast.makeText(context, "Conecta tu Arduino R4 WiFi primero", Toast.LENGTH_SHORT).show()
+        }
+    }
 
     val scanCallback = remember {
         object : ScanCallback() {
@@ -884,6 +900,114 @@ fun PantallaPrincipal(
                 }
             }
             Spacer(modifier = Modifier.height(16.dp))
+        }
+
+        // --- CONTROL DE ACTUADORES Y ENERGÍA (Paso 4 / Rúbrica 3.1.2.5, 3.1.3.9, 3.1.3.10) ---
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Text(
+                    text = "Control de Actuadores y Energía (BLE / ISO 27000)",
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 15.sp
+                )
+                Spacer(modifier = Modifier.height(10.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceEvenly
+                ) {
+                    Button(
+                        onClick = { enviarComandoArduino("LED_ON") },
+                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+                    ) {
+                        Text("Encender LED", fontSize = 12.sp)
+                    }
+                    Button(
+                        onClick = { enviarComandoArduino("LED_OFF") },
+                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary)
+                    ) {
+                        Text("Apagar LED", fontSize = 12.sp)
+                    }
+                }
+                Spacer(modifier = Modifier.height(8.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceEvenly
+                ) {
+                    Button(
+                        onClick = { enviarComandoArduino("BUZZER_OFF") },
+                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                    ) {
+                        Text("Silenciar Buzzer", fontSize = 12.sp)
+                    }
+                    Button(
+                        onClick = {
+                            modoEco = !modoEco
+                            enviarComandoArduino(if (modoEco) "ECO_ON" else "ECO_OFF")
+                        },
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = if (modoEco) Color(0xFF2E7D32) else MaterialTheme.colorScheme.tertiary
+                        )
+                    ) {
+                        Text(if (modoEco) "Eco: ACTIVO (2s)" else "Eco: INACTIVO (500ms)", fontSize = 12.sp)
+                    }
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        // --- ALMACENAMIENTO OFFLINE Y SINCRONIZACIÓN (Paso 5 / Rúbrica 3.1.1.4 & 3.1.2.7) ---
+        val lecturasPendientesCount by database?.lecturaSensorDao()?.getCantidadNoSincronizadasFlow()?.collectAsState(initial = 0)
+            ?: remember { mutableIntStateOf(0) }
+
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Text(
+                    text = "Almacenamiento Local Offline (Room DB)",
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 15.sp
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = "Lecturas almacenadas pendientes: $lecturasPendientesCount",
+                    fontSize = 13.sp
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                Button(
+                    onClick = {
+                        coroutineScope.launch(Dispatchers.IO) {
+                            val pendientes = database?.lecturaSensorDao()?.getLecturasNoSincronizadas() ?: emptyList()
+                            if (pendientes.isNotEmpty()) {
+                                database?.lecturaSensorDao()?.marcarComoSincronizadas(pendientes.map { it.id })
+                                withContext(Dispatchers.Main) {
+                                    Toast.makeText(context, "¡${pendientes.size} lecturas sincronizadas externamente con éxito!", Toast.LENGTH_LONG).show()
+                                }
+                            } else {
+                                withContext(Dispatchers.Main) {
+                                    Toast.makeText(context, "Todas las lecturas locales están al día", Toast.LENGTH_SHORT).show()
+                                }
+                            }
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Icon(imageVector = Icons.Filled.Sync, contentDescription = null)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Sincronizar Lecturas Offline (ISO 27000)", fontSize = 13.sp)
+                }
+            }
         }
 
         // --- BOTÓN DE BÚSQUEDA DE ARDUINO R4 WIFI ---
