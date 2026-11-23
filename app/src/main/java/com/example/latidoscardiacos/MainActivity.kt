@@ -615,19 +615,33 @@ fun PantallaPrincipal(
     val scanCallback = remember {
         object : ScanCallback() {
             override fun onScanResult(callbackType: Int, result: ScanResult) {
-                val device = result.device
-                val name = device.name ?: result.scanRecord?.deviceName ?: "Dispositivo BLE"
-                val mac = device.address
+                procesarScanResult(result)
+            }
 
-                val nuevoDisp = DispositivoBluetooth(name, mac)
-                if (!dispositivosEncontrados.any { d -> d.direccionMac == mac }) {
-                    dispositivosEncontrados.add(nuevoDisp)
+            override fun onBatchScanResults(results: MutableList<ScanResult>) {
+                results.forEach { procesarScanResult(it) }
+            }
+
+            private fun procesarScanResult(result: ScanResult) {
+                val device = result.device
+                val scanRecord = result.scanRecord
+                val rawName = device.name ?: scanRecord?.deviceName
+                val name = rawName ?: if (device.address != null) "Dispositivo BLE (${device.address.takeLast(5)})" else "Dispositivo BLE"
+                val mac = device.address ?: return
+
+                coroutineScope.launch(Dispatchers.Main) {
+                    val nuevoDisp = DispositivoBluetooth(name, mac)
+                    if (!dispositivosEncontrados.any { d -> d.direccionMac == mac }) {
+                        dispositivosEncontrados.add(nuevoDisp)
+                    }
                 }
             }
 
             override fun onScanFailed(errorCode: Int) {
-                escaneando = false
-                Toast.makeText(context, "Fallo en escaneo BLE: $errorCode", Toast.LENGTH_SHORT).show()
+                coroutineScope.launch(Dispatchers.Main) {
+                    escaneando = false
+                    Toast.makeText(context, "Fallo en escaneo BLE: $errorCode", Toast.LENGTH_SHORT).show()
+                }
             }
         }
     }
