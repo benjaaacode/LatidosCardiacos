@@ -13,6 +13,7 @@ import android.bluetooth.BluetoothGattDescriptor
 import android.bluetooth.BluetoothProfile
 import android.bluetooth.le.ScanCallback
 import android.bluetooth.le.ScanResult
+import android.bluetooth.le.ScanSettings
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -899,10 +900,13 @@ fun PantallaPrincipal(
                     } else {
                         dispositivosEncontrados.clear()
                         escaneando = true
-                        bluetoothLeScanner.startScan(scanCallback)
+                        val scanSettings = ScanSettings.Builder()
+                            .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
+                            .build()
+                        bluetoothLeScanner.startScan(null, scanSettings, scanCallback)
 
                         coroutineScope.launch(Dispatchers.Main) {
-                            delay(10000)
+                            delay(12000)
                             if (escaneando) {
                                 try {
                                     bluetoothLeScanner.stopScan(scanCallback)
