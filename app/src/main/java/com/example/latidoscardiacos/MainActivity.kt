@@ -24,8 +24,10 @@ import android.widget.Toast
 import java.io.IOException
 import java.util.UUID
 import kotlinx.coroutines.delay
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.biometric.BiometricPrompt
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -629,6 +631,35 @@ fun PantallaPrincipal(
         }
     }
 
+    val permissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestMultiplePermissions()
+    ) { permissionsMap ->
+        val todosConcedidos = permissionsMap.values.all { it }
+        if (todosConcedidos) {
+            if (bluetoothAdapter == null || bluetoothLeScanner == null) {
+                Toast.makeText(context, "BLE no soportado en este dispositivo", Toast.LENGTH_LONG).show()
+            } else if (!bluetoothAdapter.isEnabled) {
+                Toast.makeText(context, "Por favor, enciende el Bluetooth del celular", Toast.LENGTH_LONG).show()
+            } else {
+                dispositivosEncontrados.clear()
+                escaneando = true
+                bluetoothLeScanner.startScan(scanCallback)
+
+                coroutineScope.launch(Dispatchers.Main) {
+                    delay(10000)
+                    if (escaneando) {
+                        try {
+                            bluetoothLeScanner.stopScan(scanCallback)
+                        } catch (_: Exception) {}
+                        escaneando = false
+                    }
+                }
+            }
+        } else {
+            Toast.makeText(context, "Acepta los permisos de Bluetooth y Ubicación para buscar tu Arduino R4 WiFi", Toast.LENGTH_LONG).show()
+        }
+    }
+
     val gattCallback = remember {
         object : BluetoothGattCallback() {
             override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
@@ -908,10 +939,7 @@ fun PantallaPrincipal(
                         }
                     }
                 } else {
-                    if (activity != null) {
-                        ActivityCompat.requestPermissions(activity, permisos, 100)
-                        Toast.makeText(context, "Acepta los permisos de Bluetooth y Ubicación", Toast.LENGTH_LONG).show()
-                    }
+                    permissionLauncher.launch(permisos)
                 }
             },
             modifier = Modifier.fillMaxWidth().height(50.dp),
