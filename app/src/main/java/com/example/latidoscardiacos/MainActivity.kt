@@ -9,6 +9,7 @@ import android.bluetooth.BluetoothSocket
 import android.bluetooth.BluetoothGatt
 import android.bluetooth.BluetoothGattCallback
 import android.bluetooth.BluetoothGattCharacteristic
+import android.bluetooth.BluetoothGattDescriptor
 import android.bluetooth.BluetoothProfile
 import android.bluetooth.le.ScanCallback
 import android.bluetooth.le.ScanResult
@@ -33,15 +34,19 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.BluetoothSearching
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Bluetooth
+import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.Fingerprint
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.Alignment
 import java.security.MessageDigest
 import androidx.compose.ui.Modifier
@@ -59,6 +64,7 @@ import androidx.core.content.ContextCompat
 import androidx.fragment.app.FragmentActivity
 import androidx.activity.compose.BackHandler
 import com.example.latidoscardiacos.data.AppDatabase
+import com.example.latidoscardiacos.data.LecturaSensor
 import com.example.latidoscardiacos.data.Usuario
 import com.example.latidoscardiacos.data.UsuarioDao
 import com.example.latidoscardiacos.ui.theme.LatidosCardiacosTheme
@@ -577,15 +583,17 @@ fun PantallaLoginBiometrico(
 @Composable
 fun PantallaPrincipal(
     modifier: Modifier = Modifier,
+    database: AppDatabase? = null,
     onCerrarSesion: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val activity = context as? FragmentActivity
-    
+    val coroutineScope = rememberCoroutineScope()
+
     val bluetoothManager = context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
     val bluetoothAdapter = bluetoothManager.adapter
     val bluetoothLeScanner = bluetoothAdapter?.bluetoothLeScanner
-    
+
     val dispositivosEncontrados = remember { mutableStateListOf<DispositivoBluetooth>() }
     var escaneando by remember { mutableStateOf(false) }
 
@@ -593,14 +601,21 @@ fun PantallaPrincipal(
     var estadoConexion by remember { mutableStateOf("Desconectado") }
     var bluetoothGatt by remember { mutableStateOf<BluetoothGatt?>(null) }
 
+    // Estado del sensor recibido del Arduino R4 WiFi
+    var lecturaSensorTexto by remember { mutableStateOf("Sin dedo") }
+    var bpmActual by remember { mutableIntStateOf(0) }
+
+    val serviceUuid = remember { UUID.fromString("19B10000-E8F2-537E-4F6C-D104768A1214") }
+    val charUuid = remember { UUID.fromString("19B10001-E8F2-537E-4F6C-D104768A1214") }
+    val cccdUuid = remember { UUID.fromString("00002902-0000-1000-8000-00805f9b34fb") }
+
     val scanCallback = remember {
         object : ScanCallback() {
             override fun onScanResult(callbackType: Int, result: ScanResult) {
                 val device = result.device
                 val name = device.name ?: result.scanRecord?.deviceName ?: "Dispositivo BLE"
                 val mac = device.address
-                
-                // Buscar y priorizar "NetPulse_R4"
+
                 val nuevoDisp = DispositivoBluetooth(name, mac)
                 if (!dispositivosEncontrados.any { d -> d.direccionMac == mac }) {
                     dispositivosEncontrados.add(nuevoDisp)
@@ -622,13 +637,55 @@ fun PantallaPrincipal(
                     gatt.discoverServices()
                 } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
                     estadoConexion = "Desconectado"
+                    lecturaSensorTexto = "Sin conexión"
+                    bpmActual = 0
                     bluetoothGatt = null
                 }
             }
 
             override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
                 if (status == BluetoothGatt.GATT_SUCCESS) {
-                    // Servicios descubiertos con éxito en Arduino R4 WiFi
+                    val service = gatt.getService(serviceUuid)
+                    val characteristic = service?.getCharacteristic(charUuid)
+                    if (characteristic != null) {
+                        gatt.setCharacteristicNotification(characteristic, true)
+                        val descriptor = characteristic.getDescriptor(cccdUuid)
+                        if (descriptor != null) {
+                            descriptor.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+                            gatt.writeDescriptor(descriptor)
+                        }
+                    }
+                }
+            }
+
+            override fun onCharacteristicChanged(
+                gatt: BluetoothGatt,
+                characteristic: BluetoothGattCharacteristic
+            ) {
+                val rawValue = characteristic.getStringValue(0)
+                    ?: String(characteristic.value ?: byteArrayOf(), Charsets.UTF_8)
+                val textoLimpio = rawValue.trim()
+                lecturaSensorTexto = textoLimpio
+
+                val parsedBpm = textoLimpio.toIntOrNull()
+                if (parsedBpm != null && parsedBpm > 0) {
+                    bpmActual = parsedBpm
+
+                    // Guardar en la base de datos local Room
+                    coroutineScope.launch(Dispatchers.IO) {
+                        try {
+                            val estadoStr = if (parsedBpm > 100) "CRITICO" else "NORMAL"
+                            database?.lecturaSensorDao()?.insertarLectura(
+                                LecturaSensor(
+                                    bpm = parsedBpm,
+                                    temperatura = 36.5f,
+                                    estado = estadoStr
+                                )
+                            )
+                        } catch (_: Exception) {}
+                    }
+                } else {
+                    bpmActual = 0
                 }
             }
         }
@@ -651,6 +708,8 @@ fun PantallaPrincipal(
             bluetoothGatt?.close()
             bluetoothGatt = null
             estadoConexion = "Desconectado"
+            lecturaSensorTexto = "Sin dedo"
+            bpmActual = 0
         }
     }
 
@@ -660,21 +719,22 @@ fun PantallaPrincipal(
                 bluetoothLeScanner?.stopScan(scanCallback)
                 bluetoothGatt?.disconnect()
                 bluetoothGatt?.close()
-            } catch (e: Exception) {
-                // Ignore
-            }
+            } catch (_: Exception) {}
         }
     }
 
     Column(
         modifier = modifier
             .fillMaxSize()
-            .padding(16.dp),
+            .padding(16.dp)
+            .verticalScroll(rememberScrollState()),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
+        // --- BARRA SUPERIOR CON BOTÓN DE CERRAR SESIÓN ---
         Row(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.Start
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
         ) {
             IconButton(onClick = onCerrarSesion) {
                 Icon(
@@ -682,23 +742,99 @@ fun PantallaPrincipal(
                     contentDescription = "Cerrar Sesión"
                 )
             }
+            Text(
+                text = "NetPulse IoT Dashboard",
+                fontSize = 20.sp,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.primary
+            )
+            Spacer(modifier = Modifier.width(48.dp))
         }
 
-        Icon(
-            imageVector = if (escaneando) Icons.AutoMirrored.Filled.BluetoothSearching else Icons.Filled.Bluetooth,
-            contentDescription = "Bluetooth BLE",
-            modifier = Modifier.size(60.dp),
-            tint = MaterialTheme.colorScheme.primary
-        )
-        Spacer(modifier = Modifier.height(16.dp))
-        Text(
-            text = "Conexión BLE - NetPulse_R4",
-            fontSize = 24.sp,
-            fontWeight = FontWeight.Bold,
-            textAlign = TextAlign.Center
-        )
         Spacer(modifier = Modifier.height(16.dp))
 
+        // --- TARJETA PRINCIPAL DE MONITOREO DE RITMO CARDÍACO ---
+        val colorEstado = when {
+            estadoConexion != "Conectado" -> MaterialTheme.colorScheme.secondaryContainer
+            bpmActual > 100 -> Color(0xFFFFEBEE) // Alerta rojo claro
+            bpmActual > 0 -> Color(0xFFE8F5E9)  // Normal verde claro
+            else -> MaterialTheme.colorScheme.surfaceVariant
+        }
+
+        val colorTextoBpm = when {
+            bpmActual > 100 -> Color(0xFFD32F2F)
+            bpmActual > 0 -> Color(0xFF2E7D32)
+            else -> MaterialTheme.colorScheme.onSurfaceVariant
+        }
+
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(containerColor = colorEstado),
+            shape = RoundedCornerShape(20.dp)
+        ) {
+            Column(
+                modifier = Modifier.padding(24.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        imageVector = Icons.Filled.Favorite,
+                        contentDescription = "Latidos",
+                        tint = if (bpmActual > 100) Color.Red else MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(36.dp)
+                    )
+                    Spacer(modifier = Modifier.width(12.dp))
+                    Text(
+                        text = "Ritmo Cardíaco en Tiempo Real",
+                        fontSize = 18.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(16.dp))
+
+                Text(
+                    text = if (bpmActual > 0) "$bpmActual BPM" else lecturaSensorTexto,
+                    fontSize = 42.sp,
+                    fontWeight = FontWeight.ExtraBold,
+                    color = colorTextoBpm
+                )
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                if (bpmActual > 100) {
+                    Card(
+                        colors = CardDefaults.cardColors(containerColor = Color(0xFFFFCDD2)),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            text = "⚠️ ¡ALERTA! Ritmo Cardíaco Elevado (>100 BPM) - Buzzer Activo en Pin D5",
+                            color = Color(0xFFB71C1C),
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 13.sp,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier.padding(8.dp)
+                        )
+                    }
+                } else {
+                    Text(
+                        text = when {
+                            estadoConexion != "Conectado" -> "Conecta tu Arduino R4 WiFi para ver lecturas"
+                            lecturaSensorTexto == "Sin dedo" -> "Coloca tu dedo suavemente en el sensor (A1)"
+                            lecturaSensorTexto == "Calculando..." -> "Midiendo pulso..."
+                            else -> "Lectura normal dentro del rango de salud"
+                        },
+                        fontSize = 13.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = TextAlign.Center
+                    )
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        // --- PANEL DE ESTADO Y DISPOSITIVO CONECTADO ---
         if (dispositivoSeleccionado != null) {
             Card(
                 modifier = Modifier.fillMaxWidth(),
@@ -713,7 +849,10 @@ fun PantallaPrincipal(
                     modifier = Modifier.padding(16.dp),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
-                    Text(text = "Dispositivo: ${dispositivoSeleccionado?.nombre}", fontWeight = FontWeight.Bold)
+                    Text(
+                        text = "Dispositivo: ${dispositivoSeleccionado?.nombre}",
+                        fontWeight = FontWeight.Bold
+                    )
                     Spacer(modifier = Modifier.height(4.dp))
                     Text(text = "Estado: $estadoConexion")
                     Spacer(modifier = Modifier.height(8.dp))
@@ -721,13 +860,14 @@ fun PantallaPrincipal(
                         onClick = { dispositivoSeleccionado = null },
                         colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
                     ) {
-                        Text("Desconectar")
+                        Text("Desconectar Arduino")
                     }
                 }
             }
             Spacer(modifier = Modifier.height(16.dp))
         }
 
+        // --- BOTÓN DE BÚSQUEDA DE ARDUINO R4 WIFI ---
         Button(
             onClick = {
                 val permisos = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
@@ -751,13 +891,13 @@ fun PantallaPrincipal(
                     if (bluetoothAdapter == null || bluetoothLeScanner == null) {
                         Toast.makeText(context, "BLE no soportado en este dispositivo", Toast.LENGTH_LONG).show()
                     } else if (!bluetoothAdapter.isEnabled) {
-                        Toast.makeText(context, "Por favor, enciende el Bluetooth", Toast.LENGTH_LONG).show()
+                        Toast.makeText(context, "Por favor, enciende el Bluetooth del celular", Toast.LENGTH_LONG).show()
                     } else {
                         dispositivosEncontrados.clear()
                         escaneando = true
                         bluetoothLeScanner.startScan(scanCallback)
 
-                        GlobalScope.launch(Dispatchers.Main) {
+                        coroutineScope.launch(Dispatchers.Main) {
                             delay(10000)
                             if (escaneando) {
                                 try {
@@ -777,20 +917,23 @@ fun PantallaPrincipal(
             modifier = Modifier.fillMaxWidth().height(50.dp),
             enabled = !escaneando
         ) {
-            Text(if (escaneando) "Buscando NetPulse_R4..." else "Buscar NetPulse_R4", fontSize = 16.sp)
+            Icon(imageVector = Icons.Filled.Search, contentDescription = null)
+            Spacer(modifier = Modifier.width(8.dp))
+            Text(if (escaneando) "Buscando NetPulse_R4 (10s)..." else "Buscar NetPulse_R4 (Arduino R4)", fontSize = 16.sp)
         }
 
         Spacer(modifier = Modifier.height(24.dp))
 
+        // --- LISTA DE DISPOSITIVOS ENCONTRADOS ---
         if (dispositivosEncontrados.isNotEmpty()) {
             Text(
-                text = "Dispositivos Encontrados:",
+                text = "Dispositivos BLE Encontrados:",
                 fontWeight = FontWeight.SemiBold,
                 modifier = Modifier.align(Alignment.Start).padding(bottom = 8.dp)
             )
 
             LazyColumn(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier.fillMaxWidth().heightIn(max = 250.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 items(dispositivosEncontrados) { dispositivo ->
@@ -812,7 +955,7 @@ fun PantallaPrincipal(
                     ) {
                         Column(modifier = Modifier.padding(16.dp)) {
                             Text(
-                                text = if (esNetPulse) "⭐ ${dispositivo.nombre} (Arduino R4)" else dispositivo.nombre,
+                                text = if (esNetPulse) "⭐ ${dispositivo.nombre} (Arduino R4 WiFi)" else dispositivo.nombre,
                                 fontSize = 16.sp,
                                 fontWeight = FontWeight.Bold,
                                 color = if (esNetPulse) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
