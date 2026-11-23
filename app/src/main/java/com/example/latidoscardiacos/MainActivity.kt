@@ -6,6 +6,8 @@ import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothSocket
+import android.bluetooth.le.ScanCallback
+import android.bluetooth.le.ScanResult
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -13,6 +15,8 @@ import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.widget.Toast
 import java.io.IOException
 import java.util.UUID
@@ -644,6 +648,23 @@ fun PantallaPrincipal(
         }
     }
 
+    // Escáner BLE para Arduino UNO R4 WiFi (ESP32-S3)
+    val bleScanner = remember(bluetoothAdapter) { bluetoothAdapter?.bluetoothLeScanner }
+    val scanCallback = remember {
+        object : ScanCallback() {
+            override fun onScanResult(callbackType: Int, result: ScanResult?) {
+                result?.device?.let { device ->
+                    val nombre = device.name ?: result.scanRecord?.deviceName ?: "Arduino UNO R4 (BLE)"
+                    val mac = device.address
+                    val nuevoDisp = DispositivoBluetooth(nombre, mac)
+                    if (!dispositivosEncontrados.any { d -> d.direccionMac == mac }) {
+                        dispositivosEncontrados.add(nuevoDisp)
+                    }
+                }
+            }
+        }
+    }
+
     // Este bloque gestiona los eventos de búsqueda de Bluetooth
     DisposableEffect(context) {
         val receiver = object : BroadcastReceiver() {
@@ -682,6 +703,9 @@ fun PantallaPrincipal(
             context.unregisterReceiver(receiver)
             if (escaneando && bluetoothAdapter != null) {
                 bluetoothAdapter.cancelDiscovery()
+                try {
+                    bleScanner?.stopScan(scanCallback)
+                } catch (_: Exception) {}
             }
             try {
                 socketActivo?.close()
@@ -790,11 +814,17 @@ fun PantallaPrincipal(
                             bluetoothAdapter.cancelDiscovery()
                         }
                         escaneando = true
-                        val inicioExitoso = bluetoothAdapter.startDiscovery()
-                        if (!inicioExitoso) {
-                           Toast.makeText(context, "Fallo al iniciar el escáner Bluetooth", Toast.LENGTH_LONG).show()
-                           escaneando = false
-                        }
+                        bluetoothAdapter.startDiscovery()
+                        try {
+                            bleScanner?.startScan(scanCallback)
+                        } catch (_: Exception) {}
+
+                        Handler(Looper.getMainLooper()).postDelayed({
+                            try {
+                                bleScanner?.stopScan(scanCallback)
+                                escaneando = false
+                            } catch (_: Exception) {}
+                        }, 12000)
                     }
                 } else {
                     if (activity != null) {
