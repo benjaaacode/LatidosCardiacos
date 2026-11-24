@@ -1050,22 +1050,28 @@ fun PantallaPrincipal(
         val ultimasLecturas by database?.lecturaSensorDao()?.getUltimasLecturas()?.collectAsState(initial = emptyList())
             ?: remember { mutableStateOf(emptyList()) }
 
-        if (ultimasLecturas.isNotEmpty()) {
-            Spacer(modifier = Modifier.height(16.dp))
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
-            ) {
-                Column(modifier = Modifier.padding(16.dp)) {
+        Spacer(modifier = Modifier.height(16.dp))
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Text(
+                    text = "📜 Historial de Lecturas Guardadas (Room DB)",
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 15.sp,
+                    modifier = Modifier.padding(bottom = 8.dp)
+                )
+                if (ultimasLecturas.isEmpty()) {
                     Text(
-                        text = "📜 Historial de Lecturas Guardadas (Room DB)",
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 15.sp,
-                        modifier = Modifier.padding(bottom = 8.dp)
+                        text = "No hay lecturas guardadas todavía. Presiona 'Guardar Lectura Actual' en la tarjeta de monitoreo para registrar datos.",
+                        fontSize = 13.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
+                } else {
                     val dateFormat = remember { SimpleDateFormat("HH:mm:ss dd/MM", Locale.getDefault()) }
                     LazyColumn(
-                        modifier = Modifier.fillMaxWidth().heightIn(max = 180.dp),
+                        modifier = Modifier.fillMaxWidth().heightIn(max = 200.dp),
                         verticalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
                         items(ultimasLecturas) { lectura ->
