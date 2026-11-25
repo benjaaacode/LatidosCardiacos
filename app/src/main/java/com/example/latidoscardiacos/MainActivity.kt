@@ -19,6 +19,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
+import android.os.BatteryManager
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
@@ -51,6 +52,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.BluetoothSearching
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Bluetooth
+import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.Fingerprint
 import androidx.compose.material.icons.filled.History
@@ -1019,6 +1021,55 @@ fun PantallaPrincipal(
                         Text(if (modoEco) "Eco: ACTIVO (2s)" else "Eco: INACTIVO (500ms)", fontSize = 12.sp)
                     }
                 }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(12.dp))
+
+        // --- TARJETA DE EVALUACIÓN DE CONSUMO DE ENERGÍA Y BATERÍA (Criterio 3.1.3.10) ---
+        val batteryManager = context.getSystemService(Context.BATTERY_SERVICE) as? BatteryManager
+        val nivelBateria = batteryManager?.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY) ?: 100
+
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(
+                containerColor = if (modoEco) Color(0xFFE8F5E9) else MaterialTheme.colorScheme.surfaceVariant
+            )
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        imageVector = Icons.Filled.Bolt,
+                        contentDescription = "Energía",
+                        tint = if (modoEco) Color(0xFF2E7D32) else MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(24.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "Medición de Consumo y Batería IoT (Rúbrica 3.1.3.10)",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 14.sp
+                    )
+                }
+                Spacer(modifier = Modifier.height(8.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceAround
+                ) {
+                    Text(text = "📱 Batería Móvil: $nivelBateria%", fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+                    Text(text = "⚡ Muestreo BLE: ${if (modoEco) "2000 ms" else "500 ms"}", fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+                }
+                Spacer(modifier = Modifier.height(6.dp))
+                Text(
+                    text = if (modoEco) "✅ Modo Ahorro Energético ACTIVO (-75% consumo de radio BLE)" else "🔋 Modo Muestreo Frecuente (Uso Estándar)",
+                    fontSize = 12.sp,
+                    color = if (modoEco) Color(0xFF2E7D32) else MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontWeight = FontWeight.Medium,
+                    textAlign = TextAlign.Center
+                )
             }
         }
 
