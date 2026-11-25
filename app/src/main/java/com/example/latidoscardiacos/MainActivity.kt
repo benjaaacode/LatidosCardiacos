@@ -1049,7 +1049,7 @@ fun PantallaPrincipal(
                     )
                     Spacer(modifier = Modifier.width(8.dp))
                     Text(
-                        text = "Medición de Consumo y Batería IoT (Rúbrica 3.1.3.10)",
+                        text = "Medición de Consumo y Batería IoT",
                         fontWeight = FontWeight.Bold,
                         fontSize = 14.sp
                     )
