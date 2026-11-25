@@ -60,6 +60,7 @@ import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import com.example.latidoscardiacos.security.CryptoUtils
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.Alignment
 import java.security.MessageDigest
@@ -138,6 +139,7 @@ class MainActivity : FragmentActivity() {
                             BackHandler { pantallaActual = Pantalla.LOGIN_TRADICIONAL }
                             PantallaLoginBiometrico(
                                 modifier = Modifier.padding(innerPadding),
+                                usuarioDao = usuarioDao,
                                 onLoginExitoso = { pantallaActual = Pantalla.PRINCIPAL },
                                 onVolver = { pantallaActual = Pantalla.LOGIN_TRADICIONAL }
                             )
@@ -146,6 +148,7 @@ class MainActivity : FragmentActivity() {
                             BackHandler { pantallaActual = Pantalla.LOGIN_TRADICIONAL }
                             PantallaPrincipal(
                                 modifier = Modifier.padding(innerPadding),
+                                database = database,
                                 onCerrarSesion = { pantallaActual = Pantalla.LOGIN_TRADICIONAL }
                             )
                         }
@@ -154,16 +157,6 @@ class MainActivity : FragmentActivity() {
             }
         }
     }
-}
-
-// ==========================================
-// UTILIDAD: CIFRADO DE CONTRASEÑA (SHA-256)
-// ==========================================
-fun hashPassword(password: String): String {
-    val bytes = password.toByteArray()
-    val md = MessageDigest.getInstance("SHA-256")
-    val digest = md.digest(bytes)
-    return digest.fold("") { str, it -> str + "%02x".format(it) }
 }
 
 // ==========================================
@@ -219,10 +212,9 @@ fun PantallaLoginTradicional(
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
             trailingIcon = {
                 val imagen = if (contrasenaVisible) Icons.Filled.VisibilityOff else Icons.Filled.Visibility
-                val descripcion = if (contrasenaVisible) "Ocultar contraseña" else "Mostrar contraseña"
                 
                 IconButton(onClick = { contrasenaVisible = !contrasenaVisible }) {
-                    Icon(imageVector = imagen, contentDescription = descripcion)
+                    Icon(imageVector = imagen, contentDescription = if (contrasenaVisible) "Ocultar" else "Mostrar")
                 }
             }
         )
@@ -240,7 +232,7 @@ fun PantallaLoginTradicional(
                 Text("Recordarme", fontSize = 14.sp)
             }
             TextButton(
-                onClick = { /* TODO: Lógica de recuperar contraseña */ },
+                onClick = { Toast.makeText(context, "Contacta al soporte para restablecer clave", Toast.LENGTH_SHORT).show() },
                 contentPadding = PaddingValues(0.dp)
             ) {
                 Text("¿Olvidaste tu contraseña?", fontSize = 12.sp)
@@ -259,18 +251,21 @@ fun PantallaLoginTradicional(
 
                 coroutineScope.launch {
                     try {
-                        val hashedPassword = hashPassword(contrasena)
                         val usuario = withContext(Dispatchers.IO) {
-                            usuarioDao?.login(inputCorreo, hashedPassword)
+                            usuarioDao?.getUsuarioPorCorreo(inputCorreo)
                         }
 
-                        // Verificación con base de datos o backdoor para pruebas
                         if (usuario != null) {
-                            Toast.makeText(context, "¡Bienvenido, ${usuario.nombre}!", Toast.LENGTH_SHORT).show()
-                            onLoginExitoso()
-                        } else if (inputCorreo == "benjamin@netpulse.com" && contrasena == "admin4321") {
-                            Toast.makeText(context, "¡Bienvenido, Benjamin (Backdoor)!", Toast.LENGTH_SHORT).show()
-                            onLoginExitoso()
+                            val credencialValida = withContext(Dispatchers.Default) {
+                                CryptoUtils.verifyPasswordArgon2(contrasena, usuario.salt, usuario.contrasena)
+                            }
+
+                            if (credencialValida) {
+                                Toast.makeText(context, "¡Bienvenido, ${usuario.nombre}!", Toast.LENGTH_SHORT).show()
+                                onLoginExitoso()
+                            } else {
+                                Toast.makeText(context, "Correo o contraseña incorrectos", Toast.LENGTH_SHORT).show()
+                            }
                         } else {
                             Toast.makeText(context, "Correo o contraseña incorrectos", Toast.LENGTH_SHORT).show()
                         }
@@ -459,22 +454,27 @@ fun PantallaRegistro(
 
                 coroutineScope.launch {
                     try {
-                        val hashedPassword = hashPassword(contrasena)
+                        val saltBytes = CryptoUtils.generateSalt()
+                        val saltHex = CryptoUtils.bytesToHex(saltBytes)
+                        val hashedPassword = withContext(Dispatchers.Default) {
+                            CryptoUtils.hashPasswordArgon2(contrasena, saltBytes)
+                        }
+
                         val nuevoUsuario = Usuario(
                             nombre = inputNombre,
                             edad = inputEdad,
                             correo = inputCorreo,
-                            contrasena = hashedPassword
+                            contrasena = hashedPassword,
+                            salt = saltHex
                         )
 
                         withContext(Dispatchers.IO) {
                             usuarioDao?.insertUsuario(nuevoUsuario)
                         }
 
-                        Toast.makeText(context, "Registro exitoso", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(context, "Registro exitoso con seguridad PBKDF2 + Salt", Toast.LENGTH_SHORT).show()
                         onRegistroExitoso()
                     } catch (e: Exception) {
-                        // Catch generally handles unique constraint exceptions (email ya existe)
                         Toast.makeText(context, "Error al registrar: ¿El correo ya existe?", Toast.LENGTH_SHORT).show()
                     }
                 }
@@ -500,6 +500,7 @@ fun PantallaRegistro(
 @Composable
 fun PantallaLoginBiometrico(
     modifier: Modifier = Modifier,
+    usuarioDao: UsuarioDao? = null,
     onLoginExitoso: () -> Unit,
     onVolver: () -> Unit
 ) {
