@@ -1122,8 +1122,7 @@ fun PantallaPrincipal(
                 val permisos = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                     arrayOf(
                         Manifest.permission.BLUETOOTH_SCAN,
-                        Manifest.permission.BLUETOOTH_CONNECT,
-                        Manifest.permission.ACCESS_FINE_LOCATION
+                        Manifest.permission.BLUETOOTH_CONNECT
                     )
                 } else {
                     arrayOf(
@@ -1163,7 +1162,7 @@ fun PantallaPrincipal(
                     if (activity != null) {
                         ActivityCompat.requestPermissions(activity, permisos, 100)
                     } else {
-                        Toast.makeText(context, "Por favor, otorga los permisos de Bluetooth y Ubicación en la configuración del celular", Toast.LENGTH_LONG).show()
+                        Toast.makeText(context, "Por favor, otorga el permiso de Bluetooth en la configuración del celular", Toast.LENGTH_LONG).show()
                     }
                 }
             },
