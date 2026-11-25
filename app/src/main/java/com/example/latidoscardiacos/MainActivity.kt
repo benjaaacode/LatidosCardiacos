@@ -1162,25 +1162,30 @@ fun PantallaPrincipal(
                 }
 
                 if (permisosConcedidos) {
-                    if (bluetoothAdapter == null || bluetoothLeScanner == null) {
-                        Toast.makeText(context, "BLE no soportado en este dispositivo", Toast.LENGTH_LONG).show()
+                    if (bluetoothAdapter == null) {
+                        Toast.makeText(context, "Este celular no posee hardware Bluetooth", Toast.LENGTH_LONG).show()
                     } else if (!bluetoothAdapter.isEnabled) {
-                        Toast.makeText(context, "Por favor, enciende el Bluetooth del celular", Toast.LENGTH_LONG).show()
+                        Toast.makeText(context, "Por favor, enciende el Bluetooth de tu celular primero", Toast.LENGTH_LONG).show()
                     } else {
-                        dispositivosEncontrados.clear()
-                        escaneando = true
-                        val scanSettings = ScanSettings.Builder()
-                            .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
-                            .build()
-                        bluetoothLeScanner.startScan(null, scanSettings, scanCallback)
+                        val activeLeScanner = bluetoothAdapter.bluetoothLeScanner
+                        if (activeLeScanner == null) {
+                            Toast.makeText(context, "Escáner BLE ocupado. Desactiva y vuelve a activar el Bluetooth", Toast.LENGTH_LONG).show()
+                        } else {
+                            dispositivosEncontrados.clear()
+                            escaneando = true
+                            val scanSettings = ScanSettings.Builder()
+                                .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
+                                .build()
+                            activeLeScanner.startScan(null, scanSettings, scanCallback)
 
-                        coroutineScope.launch(Dispatchers.Main) {
-                            delay(12000)
-                            if (escaneando) {
-                                try {
-                                    bluetoothLeScanner.stopScan(scanCallback)
-                                } catch (_: Exception) {}
-                                escaneando = false
+                            coroutineScope.launch(Dispatchers.Main) {
+                                delay(12000)
+                                if (escaneando) {
+                                    try {
+                                        activeLeScanner.stopScan(scanCallback)
+                                    } catch (_: Exception) {}
+                                    escaneando = false
+                                }
                             }
                         }
                     }
