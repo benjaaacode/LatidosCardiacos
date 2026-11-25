@@ -25,10 +25,13 @@ import android.os.Handler
 import android.os.Looper
 import android.widget.Toast
 import java.io.IOException
+import java.net.HttpURLConnection
+import java.net.URL
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.UUID
+import org.json.JSONObject
 import kotlinx.coroutines.delay
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -677,15 +680,28 @@ fun PantallaPrincipal(
 
     val gattCallback = remember {
         object : BluetoothGattCallback() {
+            private val self = this
+
             override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
                 if (newState == BluetoothProfile.STATE_CONNECTED) {
                     estadoConexion = "Conectado"
                     gatt.discoverServices()
                 } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
-                    estadoConexion = "Desconectado"
-                    lecturaSensorTexto = "Sin conexión"
+                    estadoConexion = "Reconectando automáticamente..."
+                    lecturaSensorTexto = "Buscando reconexión..."
                     bpmActual = 0
-                    bluetoothGatt = null
+
+                    coroutineScope.launch {
+                        var reintentos = 0
+                        while (reintentos < 5 && estadoConexion.contains("Reconectando")) {
+                            delay(4000)
+                            reintentos++
+                            val device = dispositivoSeleccionado?.let { bluetoothAdapter?.getRemoteDevice(it.direccionMac) }
+                            if (device != null) {
+                                bluetoothGatt = device.connectGatt(context, false, self)
+                            }
+                        }
+                    }
                 }
             }
 
@@ -711,6 +727,15 @@ fun PantallaPrincipal(
                 val rawValue = characteristic.getStringValue(0)
                     ?: String(characteristic.value ?: byteArrayOf(), Charsets.UTF_8)
                 val textoLimpio = rawValue.trim()
+
+                if (textoLimpio.startsWith("ACK:")) {
+                    val ackCmd = textoLimpio.substring(4)
+                    coroutineScope.launch(Dispatchers.Main) {
+                        Toast.makeText(context, "Confirmación ACK de Arduino: $ackCmd", Toast.LENGTH_SHORT).show()
+                    }
+                    return
+                }
+
                 lecturaSensorTexto = textoLimpio
 
                 val parsedBpm = textoLimpio.toIntOrNull()
